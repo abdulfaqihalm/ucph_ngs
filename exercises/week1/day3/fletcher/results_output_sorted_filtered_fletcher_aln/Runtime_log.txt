@@ -1,0 +1,4 @@
+2023-09-08 11:38:50,272	INFO	main: Started with the command: /usr/bin/mapDamage -i ../../output_sorted_filtered_fletcher_aln.bam -r ../../paeruginosa.fasta.gz --no-stats
+2023-09-08 11:40:06,013	DEBUG	main: BAM read in 77.859155 seconds
+2023-09-08 11:40:06,879	INFO	main: Successful run
+2023-09-08 11:40:06,879	DEBUG	main: Run completed in 78.725371 seconds

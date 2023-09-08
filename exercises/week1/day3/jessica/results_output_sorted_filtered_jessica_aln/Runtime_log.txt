@@ -1,0 +1,7 @@
+2023-09-08 11:32:40,913	INFO	main: Started with the command: /usr/bin/mapDamage -i ../../output_sorted_filtered_jessica_aln.bam -r ../../paeruginosa.fasta.gz
+2023-09-08 11:32:57,795	DEBUG	main: BAM read in 19.060624 seconds
+2023-09-08 11:32:58,800	INFO	mapdamage.rscript: Performing Bayesian estimates
+2023-09-08 11:32:58,801	DEBUG	mapdamage.rscript: Call: Rscript /usr/lib/python3/dist-packages/mapdamage/Rscripts/stats/runGeneral.R --args 30 10000 10 50000 0 0 1 1 0 0 1 12 results_output_sorted_filtered_jessica_aln/ /usr/lib/python3/dist-packages/mapdamage/Rscripts/stats/ results_output_sorted_filtered_jessica_aln/Stats_out 0 0 0 results_output_sorted_filtered_jessica_aln/acgt_ratio.csv 0 0
+2023-09-08 11:38:43,742	DEBUG	mapdamage.rscript: Bayesian estimates completed in 344.941076 seconds
+2023-09-08 11:38:43,742	INFO	main: Successful run
+2023-09-08 11:38:43,742	DEBUG	main: Run completed in 365.007211 seconds
