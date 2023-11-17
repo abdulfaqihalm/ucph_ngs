@@ -1,0 +1,16 @@
+ASTRAL/
+cafe_*/
+*.fas
+*.tsv
+*.json
+*.txt
+*.nex
+*.bionj
+*.contree
+*.iqtree
+*.nwk
+*.gz
+*.mldist
+*.tre*
+*.phy
+*.png

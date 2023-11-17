@@ -1,0 +1,687 @@
+---
+title: "assignment_eQTL"
+output: html_document
+date: "2023-09-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(MatrixEQTL)
+```
+
+## Part 1: Understanding The Basic
+
+```{r}
+design_data <- read.table("design.tab", header=TRUE, sep="\t") |> 
+  rownames_to_column() |>  as_tibble()
+sub_expr_data <- read.table("sub_expr.tab", header=TRUE, sep="\t") |> 
+  rownames_to_column() |> 
+  as_tibble() |> 
+  rename(gene=rowname)
+sub_geno_data <- read.table("sub_geno.tab", header=TRUE, sep="\t") |> 
+  rownames_to_column() |> 
+  as_tibble() |> 
+  rename(snp=rowname)
+```
+
+
+### Task 1
+1. What do the -1,0,1,2 values represent in the sub geno.tab file?
+```{r}
+head(sub_geno_data)
+```
+The 0 from the file should represent the homozygous major (AA), 1 represents the heterozygous (Aa) and 2 come from the homozygous minor (aa). In addition, -1 should represent unknown genotype.
+
+2. What is stored in the sub expr.tab file and what has been done with this data
+```{r}
+head(sub_expr_data)
+```
+The file should contain the normalized expression level of genes (rows) from several samples (columns)
+
+3. What information is stored in the design.txt file?
+```{r}
+design_data
+```
+That file contains the metadata of each samples (rows) such as their species name, population group, and strain type
+
+### Task 2 
+
+1. Calculate the number of missing genotypes for each SNP across all individuals.
+```{r}
+sub_geno_data <- sub_geno_data |> 
+  rowwise(snp) |> 
+  mutate(missing_snps =  sum(c_across(where(is.numeric))==-1)) |> 
+  ungroup() 
+sub_geno_data |> select(snp, missing_snps) |>  arrange(desc(missing_snps))
+```
+From the calculation, we can see that there are three SNPs that have missing genotypes: snp 22 33671358,snp 22 47528038, snp 22 42606894. 
+Each of them have 41 missing genotypes
+
+
+2. Calculate the minor allele frequency (MAF) for all SNPs across all individuals. (hint: divide mean of
+genotypes by 2)
+
+```{r}
+sub_geno_data <- sub_geno_data |> 
+  rowwise(snp) |> 
+  mutate(MAF = mean(c_across(-c(missing_snps))[c_across(-c(missing_snps)) != -1])/2) |> 
+  ungroup() 
+
+sub_geno_data |> 
+  select(snp, MAF)
+  
+```
+
+3. Filter out SNPs that have missing genotypes or a MAF<0.05 and use the filtered snps for the rest of
+the exercise.
+```{r}
+sub_geno_data_filtered <- sub_geno_data |>
+  filter(missing_snps==0 & MAF>=0.05)
+
+dim(sub_geno_data_filtered)
+```
+
+
+
+### Task 3
+1. Plot the distribution of expression levels across all samples for the ENSG00000172404.4 gene
+
+```{r}
+selected_gene_expr <- sub_expr_data |> 
+  filter(gene=="ENSG00000172404.4") |> 
+  pivot_longer(cols=-c(gene), names_to = "sample_id", values_to = "expr_value")
+
+
+ggplot(data = selected_gene_expr) +
+  geom_histogram(aes(x = expr_value, y=..density..),      # Histogram with density instead of count on y-axis
+               colour="black", fill="white") +
+  geom_density(mapping = aes(x = expr_value), fill = "red", alpha = 0.3) +
+  labs(title = "Distribution of Expression Level of ENSG00000172404.4") +
+  theme_bw()
+```
+
+2. Plot the expression levels of ENSG00000172404.4 against the genotypes of snp_22_41256802 and
+snp_22_45782142
+
+```{r}
+selected_snps_geno <- sub_geno_data_filtered |> 
+  select(-c("MAF", "missing_snps")) |> 
+  filter(snp %in% c("snp_22_41256802", "snp_22_45782142")) |> 
+  pivot_longer(cols = -snp, names_to = "sample_id", values_to = "geno")
+
+selected_expr_snps_geno <- selected_snps_geno |> 
+  left_join(selected_gene_expr |> select(!gene), by = join_by(sample_id)) |> 
+  arrange(sample_id, snp)
+  
+ggplot(data = selected_expr_snps_geno, 
+       mapping = aes(x = as.factor(geno), y = expr_value, fill = as.factor(geno))) +
+  geom_boxplot(alpha = 0.5,
+       show.legend = FALSE) + 
+  geom_jitter(position = position_jitter(0.2), alpha = 0.3,
+       show.legend = FALSE) + 
+  labs(title = "Gene Expression Level Against Genotype",
+       subtitle = "Gene = ENSG00000172404.4",
+       x = "geno") +
+  facet_grid(cols = vars(snp), scales = "free", space = "free") + 
+  theme_bw()
+```
+
+### Task 4 
+1. Linear regression for snp_22_41256802 on ENSG00000172404.4
+
+```{r}
+pred_22_41256802 <- lm(data = selected_expr_snps_geno |> filter(snp=="snp_22_41256802"),
+   formula = expr_value ~ geno)
+print(summary(pred_22_41256802))
+```
+
+2. Linear regression for snp_22_45782142 on ENSG00000172404.4
+
+```{r}
+pred_22_45782142 <- lm(data = selected_expr_snps_geno |> filter(snp=="snp_22_45782142"),
+   formula = expr_value ~ geno)
+print(summary(pred_22_45782142))
+```
+
+## Question 4 
+1. Explain the results. What are the important values to look at and what do they tell you?
+
+The important values that need to look for are the estimated effect size (geno) and its p-value from the two-sided t-test with the following hypothesis: 
+    \begin{align}
+    H_{0}:\:  \beta_{geno} = 0 \notag\\
+    H_{A}:\:  \beta_{geno} \neq 0 \notag
+    \end{align}
+
+
+From the results above, the p-value from the estimated effect size of snp_22_41256802 is very small (<2e-16). If we set our threshold to be 0.05, we can confidently reject the null hypothesis. Thus, there is enough evident that the effect size of additional minor allele on snp_22_41256802 on is not zero for the expression of ENSG00000172404.4 gene. We can see that the estimated effect size is 0.125135. 
+
+On the other hand, the p-value from the estimated effect size of additional minor allele on snp_22_45782142 for the expression of ENSG00000172404.4 gene is not significant using the same threshold (0.05). Therefore, we fail to reject the null that stated the effect size is zero. 
+
+### Task 5 
+Do a linear regression for snp_22_43336231 on ENSG00000100266.11
+
+1. All individuals together
+
+
+```{r}
+selected_gene_expr2_all <- sub_expr_data |> 
+  filter(gene=="ENSG00000100266.11") |> 
+  pivot_longer(cols=-c(gene), names_to = "sample_id", values_to = "expr_value")
+
+selected_snps_geno2 <- sub_geno_data_filtered |> 
+  select(-c("MAF", "missing_snps")) |> 
+  filter(snp %in% c("snp_22_43336231")) |> 
+  pivot_longer(cols = -snp, names_to = "sample_id", values_to = "geno")
+
+selected_expr_snps_geno2 <- selected_snps_geno2 |> 
+  left_join(selected_gene_expr2_all |> select(!gene), by = join_by(sample_id)) |> 
+  left_join(design_data |> select(Source.Name,Characteristics.population.),
+            by = join_by(sample_id==Source.Name)) |> 
+  arrange(sample_id, snp)
+
+pred_22_43336231_all <- lm(data = selected_expr_snps_geno2,
+   formula = expr_value ~ geno)
+print(summary(pred_22_43336231_all))
+```
+
+
+2. Separately for african and non-african individuals
+```{r}
+#Africa individuals YRI	Yoruba in Ibadan, Nigera
+pred_22_43336231_YRI <- lm(data = selected_expr_snps_geno2 
+                           |> filter(Characteristics.population.=="YRI"),
+   formula = expr_value ~ geno)
+print(summary(pred_22_43336231_YRI))
+
+# Non Africa individuals
+pred_22_43336231_non_YRI <- lm(data = selected_expr_snps_geno2 
+                           |> filter(Characteristics.population.!="YRI"),
+   formula = expr_value ~ geno)
+print(summary(pred_22_43336231_non_YRI))
+```
+
+### Question 5 
+
+1. Is there a difference between african and non-africans? If so explain why
+
+From the result above, we can see that if we regress only for the African individuals, the effect size is not statistically significant anymore at level 5%. Howver, the non-africans effect size is still statistically significant at 5% level but with higher estimated effect size compared with all individuals (4.13 vs 3.32). The difference might be due to population stratification where each population has difference allele distribution which can be described by the following graph
+
+```{r}
+temp_geno <- sub_geno_data_filtered  |> 
+  select(-c("MAF", "missing_snps")) |> 
+  pivot_longer(cols = -snp, names_to = "sample_id", values_to = "geno") |> 
+  left_join(design_data |> select(Source.Name,Characteristics.population.),
+            by = join_by(sample_id==Source.Name)) |> 
+  group_by(Characteristics.population., snp) |> 
+  summarise(MAF = mean(geno)/2) |> 
+  ungroup() |> 
+  mutate(is_africa = if_else(Characteristics.population.=="YRI", "African", "Non-african"))
+
+ggplot(data = temp_geno, mapping = aes(x = is_africa, y = MAF,
+                                       fill = is_africa)) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.7) + 
+  geom_jitter(position = position_jitter(0.2), alpha = 0.3,
+       show.legend = FALSE) + 
+  scale_fill_manual(values = c("#ecb21e", "#812e91")) +
+  labs(title = "Distribution of MAF between Africans and Non-africans") +
+  theme_bw()
+```
+
+From the above figure, we can see that the distribution of allele frequencies between African and Non-african based on the given data is different.
+
+
+2. If the population structure is unknown, how can you still include it as a covariate?
+
+If the information regarding the population can not be obtained, we could still use the $k$ principal components (PCs) of the genotype data into our linear model. This is due to PCs could help us to maximize the variation of the genotype difference among the population. Therefore, our linear model could be: 
+    \begin{align}
+    gene\_expr = \beta_{0} + \beta_{1}genotype + \beta_{2}PC_{1} + \beta_{3}PC_{2} + ... + \beta_{k+1}PC_{k}
+    \end{align}
+
+    
+### Task 6: Do a linear regression on 1st snp on 1st gene, 2nd snp on 2nd gene etc.
+
+
+- Create a matrix containing the gene_id, snp_id, effect size, t.value and p.value. 
+```{r}
+# transposing the data for looping 
+sub_expr_data_t <- sub_expr_data |>  
+  pivot_longer(cols= -1)  |>  
+  pivot_wider(names_from = gene,values_from = value) |> 
+  rename(sample_id = name)
+
+
+sub_geno_data_filtered_t <- sub_geno_data_filtered |>  
+  select(-c("missing_snps", "MAF")) |> 
+  pivot_longer(cols= -1)  |>  
+  pivot_wider(names_from = snp,values_from = value) |> 
+  rename(sample_id = name)
+```
+
+```{r}
+
+max_iter <- 32
+result <- matrix(nrow=max_iter,ncol=5)
+colnames(result) <- c("gene", "snp", "effect_size", "t_val", "p_val")
+
+for(i in c(1:max_iter)){
+  # Get gene_id 
+  result[i,1] <- names(sub_expr_data_t)[i+1]
+  # Get snp_id
+  result[i,2] <- names(sub_geno_data_filtered_t)[i+1]
+  
+  # Predict the linaer model 
+  pred <- lm(formula = sub_expr_data_t |> pull(i+1) ~ 
+               sub_geno_data_filtered_t |> pull(i+1))
+  # Summary coefficient
+  summ_pred_coeff <- summary(pred)$coefficient
+  
+  result[i,3] <- summ_pred_coeff[2,1]
+  #t_val
+  result[i,4]<- summ_pred_coeff[2,3]
+  #p_val
+  result[i,5] <- summ_pred_coeff[2,4]
+}
+```
+
+- Do a multiple testing correction on the resulting p.values using fdr.
+```{r}
+adj_p_val <- p.adjust(as.double(result[,"p_val"]), 
+                           method = "BH")
+
+result <- cbind(result, adj_p_val)
+
+# reorder result 
+result <- result[order(adj_p_val),]
+
+head(result)
+```
+
+
+- Plot the most significant hit.
+```{r}
+# Most significant hit 
+sel_gene <- result[1,"gene"]
+sel_snp <- result[1,"snp"]
+
+sel_data <- tibble(expr_value=sub_expr_data_t |> pull(sel_gene), 
+                   geno=sub_geno_data_filtered_t |> pull(sel_snp))
+  
+ggplot(data = sel_data, 
+       mapping = aes(x = as.factor(geno), y = expr_value, fill = as.factor(geno))) +
+  geom_boxplot(alpha = 0.5,
+       show.legend = FALSE) + 
+  geom_jitter(position = position_jitter(0.2), alpha = 0.3,
+       show.legend = FALSE) + 
+  labs(title = "Gene Expression Level Against Genotype of Mos Signiifcant Hits",
+       subtitle = paste("Gene = ", sel_gene, ", SNP = ", sel_snp),
+       x = "geno") +
+  theme_bw()
+```
+
+### Questions 6:
+- How many tests did you perform?
+
+There are 32 tests 
+
+- What are you correcting for with the fdr? Why is this important for eQTL analysis?
+
+The FDR corrected the p-value of each test. This is important since in th real eQTL analysis we might do lots of testings (i.e. every SNPs are tested to every genes) and if the p-value is not corrected, we can get many false positive. 
+
+
+
+
+## Part 2
+
+### Task 1 
+```{r}
+# Expression data for chromosome 20
+expr_ceu_20 <- read.table("expr_ceu_chr20.tab", header=TRUE, sep="\t") |> 
+  as_tibble() 
+
+# Gene positions for genes on chromosome 20
+pos_expr_ceu_20 <- read.table("expr_chr20.pos", header=TRUE, sep="\t") |> 
+  as_tibble() 
+
+# Genotype data for chromosome 20
+geno_ceu_20 <- read.table("geno_ceu_chr20_strict.tab", header=TRUE, sep="\t") |> 
+  as_tibble() 
+
+# Position of genotype data for chromosome 20
+pos_geno_ceu_20 <- read.table("geno_ceu_chr20_strict.pos", header=TRUE, sep="\t") |> 
+  as_tibble() 
+
+# Genotype data for chromosome 22
+geno_ceu_22 <- read.table("geno_ceu_chr22_strict.tab", header=TRUE, sep="\t") |> 
+  as_tibble() 
+
+# Position of genotype data for chromosome 22
+pos_geno_ceu_22 <- read.table("geno_ceu_chr22_strict.pos", header=TRUE, sep="\t") |> 
+  as_tibble() 
+```
+
+- How many samples are included in this dataset?
+```{r}
+head(expr_ceu_20)
+head(geno_ceu_20)
+head(geno_ceu_22)
+```
+
+```{r}
+dim(expr_ceu_20)
+dim(geno_ceu_20)
+dim(geno_ceu_22)
+
+# Check if the individual on different chromosomes data are the same 
+sum(names(expr_ceu_20 |> select(-c(id))) != names(geno_ceu_20 |> select(-c(id)))) 
+sum(names(expr_ceu_20 |> select(-c(id))) != names(geno_ceu_22 |> select(-c(id)))) 
+sum(names(geno_ceu_20 |> select(-c(id))) != names(geno_ceu_22 |> select(-c(id)))) 
+```
+From the data shown above, we can conclude that each of the data contains samples from 91 individuals.
+
+- How many variants are present on chromosome 20? 
+
+Based on the length of the geno_ceu_20, there are 3000 variants within the chromosome 20 
+
+- How many homozyguous and heterozygous genotypes are observed for the first individual in the dataset (NA06984)?
+
+To check the number of homozygous and heterozygous genotypes, we check the chromosome 20 and 22 for NA06984
+```{r}
+# Check on chromosome 20 
+chr_20_sum_geno <- table(geno_ceu_20$NA06984)
+# Check on chromosome 22 
+chr_22_sum_geno <- table(geno_ceu_22$NA06984)  
+
+tot_hom_geno <- chr_20_sum_geno[1] + chr_20_sum_geno[3] + 
+  chr_22_sum_geno[1] + chr_22_sum_geno[3]
+tot_het_geno <- chr_20_sum_geno[2] + chr_22_sum_geno[2]
+
+cat("Total umber of homozygous genotypes: ", tot_hom_geno, 
+    "\nTotal number of heterozygous genotypes: ", tot_het_geno )
+```
+
+- How many genes are included?
+
+```{r}
+cat("Total number of gene included (expression on chr 20): ", 
+    length(pos_expr_ceu_20$geneid))
+```
+
+- What gene shows the highest mean expression?
+
+```{r}
+expr_ceu_20 |> 
+  rowwise(id) |> 
+  summarise(mean_expr = mean(c_across(where(is.numeric))), .groups = "drop") |> 
+  arrange(desc(mean_expr)) |> 
+  head()
+```
+From the data shown above, the "ENSG00000227063.4" gene has the highest mean gene expression 
+
+### Task 2 - cis-eQTL
+```{r}
+#Matrix eQTL
+library(MatrixEQTL)
+# Genotype file names
+SNP_file_name = "geno_ceu_chr20_strict.tab" ; #Genotype file path
+snps_location_file_name = "geno_ceu_chr20_strict.pos" ; #snp position file path
+
+# Gene expression file names
+expression_file_name = "expr_ceu_chr20.tab" ;#Expression file path 
+gene_location_file_name = "expr_chr20.pos" ;#gene position file path
+
+# Only associations significant at this level will be saved 
+pvOutputThreshold_cis = 1; #p.value threshold for cis eqtls 
+pvOutputThreshold_tra = 0; #p.value threshold for trans eqtls
+
+
+#Covariates file names
+covariates_file_name = character();# Set to character() for no covariates
+
+# Distance for local gene-SNP pairs 
+cisDist = 1e6; #Define cis distance
+
+
+## Load genotype data
+snps = SlicedData$new();
+snps$fileDelimiter = "\t"; # the TAB character 
+snps$fileOmitCharacters = "NA"; # denote missing values;
+snps$fileSkipRows = 1; # one row of column labels
+snps$fileSkipColumns = 1; # one column of row labels
+snps$fileSliceSize = 20000; # read file in slices of 2,000 rows
+snps$LoadFile(SNP_file_name);
+
+## Load gene expression data
+gene = SlicedData$new();
+gene$fileDelimiter = "\t"; # the TAB character
+gene$fileOmitCharacters = "NA"; # denote missing values
+gene$fileSkipRows = 1;
+gene$fileSkipColumns = 1;
+gene$fileSliceSize = 20000;
+gene$LoadFile(expression_file_name);
+
+#Load position files
+snpspos = read.table(snps_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+
+## Run the analysis
+me = Matrix_eQTL_main(
+  snps = snps,
+  gene = gene,
+  output_file_name=NULL,
+  pvOutputThreshold = pvOutputThreshold_tra,
+  useModel = modelLINEAR,
+  errorCovariance =numeric(),
+  verbose = FALSE,
+  output_file_name.cis = NULL, #Do not write out cis results 
+  pvOutputThreshold.cis = pvOutputThreshold_cis,
+  snpspos = snpspos,
+  genepos = genepos,
+  cisDist = cisDist,
+  min.pv.by.genesnp = FALSE,
+  noFDRsaveMemory = FALSE,
+  pvalue.hist = FALSE)
+
+cis_eqtls = me$cis$eqtls[,-c(5)]
+cis_eqtls["beta_se"] = cis_eqtls["beta"]/cis_eqtls["statistic"]
+rm(me)
+```
+- How many tests were conducted?
+```{r}
+dim(cis_eqtls)
+```
+
+There are 527,117 tests conducted. 
+
+-  Using a bonferroni correction (α = 0.05), how many genes are significant?
+```{r}
+cis_eqtls["adj_pvalue"] <- p.adjust(cis_eqtls$pvalue, method = "bonferroni")
+
+# Filtering cis_eqlts with significant value
+signf_cis_eqtls <- cis_eqtls[cis_eqtls["adj_pvalue"] < 0.05, ]
+length(unique(signf_cis_eqtls$gene))
+```
+From the test, There are only 6 genes that are significant
+
+- Report the gene-snp pair show the lowest pvalue? What is the effect size of this snp-gene pair? 
+```{r}
+cis_eqtls |> 
+  arrange(pvalue) |> 
+  head(1) 
+```
+From the result above, ENSG00000196756.5-snp_20_37055875 is the gene-snp pair with the lowest pvalue and its estimated effect size is ~-8.147.
+
+- What is the biotype of this gene? 
+This gene has biotype of lncRNA 
+
+### Task 3 - trans-eQTL 
+```{r}
+#Matrix eQTL
+# Genotype file names
+SNP_file_name = "geno_ceu_chr22_strict.tab" ; #Genotype file path 
+snps_location_file_name = "geno_ceu_chr22_strict.pos" ; #snp position file path
+
+
+# Gene expression file names
+expression_file_name = "expr_ceu_chr20.tab" ;#Expression file path 
+gene_location_file_name = "expr_chr20.pos" ;#gene position file path
+
+# Only associations significant at this level will be saved 
+pvOutputThreshold_cis = 0; #p.value threshold for cis eqtls 
+pvOutputThreshold_tra = 1; #p.value threshold for trans eqtls
+
+#Covariates file names
+covariates_file_name = character();# Set to character() for no covariates
+
+# Distance for local gene-SNP pairs 
+cisDist = 1e6; #Define cis distance
+
+## Load genotype data
+snps = SlicedData$new();
+snps$fileDelimiter = "\t"; # the TAB character 
+snps$fileOmitCharacters = "NA"; # denote missing values;
+snps$fileSkipRows = 1; # one row of column labels
+snps$fileSkipColumns = 1; # one column of row labels
+snps$fileSliceSize = 20000; # read file in slices of 2,000 rows
+snps$LoadFile(SNP_file_name);
+
+## Load gene expression data
+gene = SlicedData$new();
+gene$fileDelimiter = "\t"; # the TAB character
+gene$fileOmitCharacters = "NA"; # denote missing values;
+gene$fileSkipRows = 1;
+gene$fileSkipColumns = 1;
+gene$fileSliceSize = 20000;
+gene$LoadFile(expression_file_name);
+
+
+snpspos = read.table(snps_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+
+## Run the analysis
+me = Matrix_eQTL_main(
+  snps = snps,
+  gene = gene,
+  output_file_name=NULL,
+  pvOutputThreshold = pvOutputThreshold_tra,
+  useModel = modelLINEAR,
+  errorCovariance =numeric(),
+  verbose = FALSE,
+  output_file_name.cis = NULL, #Do not write out cis results 
+  pvOutputThreshold.cis = pvOutputThreshold_cis,
+  snpspos = snpspos,
+  genepos = genepos,
+  cisDist = cisDist,
+  min.pv.by.genesnp = FALSE,
+  noFDRsaveMemory = FALSE,
+  pvalue.hist = FALSE)
+
+trans_eqtls = me$all$eqtls[,-c(5)]
+trans_eqtls["beta_se"] = trans_eqtls["beta"]/trans_eqtls["statistic"]
+rm(me)
+```
+
+```{r}
+dim(trans_eqtls)
+```
+
+- How many tests were conducted?
+
+From the size of trans_eqtls data, there are 561,561 tests conducted 
+
+- Using a bonferroni correction (α = 0.05), how many genes are significant?
+
+```{r}
+trans_eqtls["adj_pvalue"] <- p.adjust(trans_eqtls$pvalue, method = "bonferroni")
+
+# Filtering trans_eqlts with significant value
+signf_trans_eqtls <- trans_eqtls[trans_eqtls["adj_pvalue"] < 0.05, ]
+length(unique(signf_trans_eqtls$gene))
+```
+From the result above, with the bonferroni correction, there is not any significant genes. 
+
+
+### Task 4 - QQ-plot In this section we will explore QQ-plots (Quantile-Quantile plots) for both the cis-eQTLS and the trans-eQTLS.
+- Briefly explain what a QQ-plot can be used for (2-3 sentences)
+
+QQplot is a plot that can be used to compare two distributions with plotting their quantiles. If the two distributions are the same, the points would lie on the linear line. 
+
+```{r}
+qqp<-function(x, title, maxLogP=30,...){ 
+  x<-x[!is.na(x)]
+  if(!missing(maxLogP)){ 
+    x[x<10^(-maxLogP)]<-10^(-maxLogP)
+  }
+  N<-length(x)
+  chi1<-qchisq(1-x,1)
+  x<-sort(x)
+  e<- -log((1:N-0.5)/N,10)
+  plot(e,-log(x,10),main=title,ylab="Observed log10(p-value)",xlab="Expected log10(p-value)",...)
+  abline(0,1,col=2,lwd=2)
+  c95<-qbeta(0.95,1:N,N-(1:N)+1)
+  c05<-qbeta(0.05,1:N,N-(1:N)+1)
+  lines(e,-log(c95,10))
+  lines(e,-log(c05,10))
+}
+
+```
+
+- Compute the QQ-plot for both the cis and trans eQTL separately
+
+```{r}
+par(mfrow=c(1,2))
+qqp(cis_eqtls$pvalue, "QQPlot of cis_eQTLS")
+qqp(trans_eqtls$pvalue, "QQPlot of trans_eQTLS")
+```
+
+-  What is the main difference between these two QQ-plots and what drives this difference?
+From the figure above, we can see that the cis-eQTL tends to deviate from the null distribution (p-value uniformly distributed [0,1]) shown by the red line. The deviation of cis eQTL QQplot makes sense since there should be local regulation near the genes (cis-SNPs). However, the trans-eQTL QQ plot seems to be expected as the null distribution. This could be due to to the given genes are not associated with the given distal regulators (trans-SNPs). 
+
+
+### Task 5 - PVE In the last exercise, we will calculate how much of the variance in gene expression can be explained by a SNP. This is called proportion of variance explained (PVE).
+
+- Calculate the PVE for all cis SNP-gene pairs and make a histogram of them
+```{r}
+# Use matrixStats for faster calculation
+library(matrixStats)
+# Data Table for faster join 
+library(data.table)
+
+geno_ceu_20_mat <- as.matrix(geno_ceu_20 |> select(-c(id)))
+geno_ceu_20_MAF <- data.table(snps = geno_ceu_20$id, 
+                          MAF = matrixStats::rowSums2(geno_ceu_20_mat)/dim(geno_ceu_20_mat)[2]/2)
+setindex(geno_ceu_20_MAF, snps)
+
+cis_eqtls <- as.data.table(cis_eqtls)
+setindex(cis_eqtls, snps)
+
+cis_eqtls <- cis_eqtls[geno_ceu_20_MAF, on= .(snps), nomatch = NULL ]
+
+N <- dim(geno_ceu_20_mat)[2]
+cis_eqtls[, PVE := (2*(beta^2)*MAF*(1-MAF))/( 2*(beta^2)*MAF*(1-MAF) +  (beta_se^2)*2*N*MAF*(1-MAF)), nomatch = NULL] 
+```
+
+```{r}
+ggplot(data = cis_eqtls, mapping = aes(x = PVE)) + 
+  geom_histogram(colour="black", fill="red", alpha = 0.3) +
+  labs(title = "Distribution of PVE of cis-eQTL") +
+  theme_bw()
+```
+
+- Report the mean PVE across all snp-gene pairs.
+
+```{r}
+cat("Mean PVE across all snp-gene pairs: ", mean(cis_eqtls$PVE))
+```
+
+- Report the snp-gene pair and PVE that explains the largest amount of the variance
+```{r}
+cis_eqtls |> 
+  arrange(desc(PVE)) |> 
+  head(5) |> 
+  select(-c(statistic))
+```
+
+From the above data, we can see that the highest snp-gene pair is snp_20_37055875-ENSG00000196756.5

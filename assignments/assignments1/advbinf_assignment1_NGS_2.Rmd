@@ -1,0 +1,167 @@
+---
+title: "week3"
+output: html_document
+date: "2023-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Model
+```{r}
+dat <- read.delim("twoYeast.nicepileup",as.is=T,comment.char="",head=F)
+names(dat) <- c("CHR","POS","REF",paste(c("depth","bases","AsciiQscore"), rep(1:2,each=3),sep="_"))
+tail(dat, n=10)
+```
+
+We can see that the number of bases of each individual is reflected by its depth i.e. On site 50000, individual 1 has reads with 3 depth which corresponds to "tTt" while individual 2 has a depth of 8 that is "TTTTTtTT"
+
+```{r}
+library(stringr)
+sort(str_unique(str_split_1(paste(dat$bases_1, collapse=""), "")))
+sort(str_unique(str_split_1(paste(dat$bases_2, collapse=""), "")))
+sort(str_unique(str_split_1(paste(dat$REF, collapse=""), "")))
+```
+We can see there is also star character which is a deletion(?)
+Below is the example of sites which contain the "*" either on base1 or base2
+
+```{r}
+library(tidyverse)
+dat.tibble <- tibble(dat)
+head (dat.tibble |> 
+  filter(grepl("\\*", bases_1) | grepl("\\*", bases_1))) 
+```
+We will igonre the "*" character.
+
+GENOTYPE LIKELIHOOD OF YEAST
+```{r}
+# Genotype log-likelihood function for a site j of a yeast individual i
+# Input:  observed base, bases quality, and genotype (must be in capital letter)
+GL <- function(obsv_bases, bases_qual,  geno){
+  # P(X_{i,j}|b)
+  # input: observed bases (A,C,G,T) for forward and (a,c,g,t) for reverse reads,
+  #        base quality in ASCII, and genotype
+  
+  # upper all the bases. Threat reverse reads as capital.
+  obsv_bases = toupper(obsv_bases)
+  len = nchar(bases_qual)
+  sum = 0
+  for(i in 1:len){
+    base = substr(obsv_bases, i, i)
+    qual = substr(bases_qual, i, i)
+    error = 10^(-(utf8ToInt(qual) - 33)/10) 
+    # There are several sites which still have the indel - ignore it
+    if(base=="*"){
+    }else if(base==geno){
+      sum <- sum + log(1 - error)
+    }else{
+      sum <- sum + log(error/3)
+    }
+  }
+  return(sum)
+}
+```
+
+EM
+```{r}
+bases <- c("A", "C", "G", "T")
+allele_combs <- c("AA","AC","AG","AT","CA","CC","CG","CT","GA","GC","GG","GT","TA","TC","TG","TT")
+
+calculate_Q_lik <- function(theta, obsv_bases1, bases_qual1,obsv_bases2, bases_qual2){
+  # input: theta and two bases of a site 
+  # ouptput: P(Z| X, theta) for 16 combination allele
+  
+  # Where
+  # X_i is base combination at site i 
+  # theta is 16 different allele combination frequencies 
+  # Z is base combination 
+  bases <- c("A", "C", "G", "T")
+  pXZ_pZtheta <- c()
+  lik <- 0
+  for(b1 in bases){
+    for(b2 in bases){
+      GL1 <- GL(obsv_bases1, bases_qual1,  b1)
+      GL2 <- GL(obsv_bases2, bases_qual2,  b2)
+      gl <- (GL1*GL2)*(theta[paste0(b1,b2)])
+      pXZ_pZtheta[paste0(b1,b2)] <- gl
+      lik <- lik + log(gl)
+    }
+  }
+  
+  results <- list(Q=(pXZ_pZtheta/sum(pXZ_pZtheta)), like=gl)
+  return(results)
+}
+
+
+
+emStep <- function(theta,data){
+  # EM algorithm
+  # input: theta_n and data
+  # ouput: theta_(n+1)
+  N <- nrow(data) 
+  allele_combs <- c("AA","AC","AG","AT","CA","CC","CG","CT","GA","GC","GG","GT","TA","TC","TG","TT")
+  ## E step
+  QZ <-matrix(0,nrow=N, 
+              ncol=16)
+  colnames(QZ) <- allele_combs ## give columnames for the 16 haplotype pairs
+  log_like <-0
+  for(i in 1:N){ 
+    base1 = data[i,"bases_1"]
+    score1 = data[i,"AsciiQscore_1"]
+    base2 = data[i,"bases_2"]
+    score2 = data[i,"AsciiQscore_2"]
+  
+    Q_lik <- calculate_Q_lik(theta, base1, score1, base2, score2)
+    QZ[i,] <-  Q_lik[["Q"]]
+    log_like <- log_like + log(Q_lik[["like"]])
+  }
+  ## Mstep
+  # get the expected number of allel combinations(16 possible pairs)
+  expected_allele_comb <-  colSums(QZ)
+  thetaNew <- expected_allele_comb/sum(expected_allele_comb)
+  results <- list(theta=thetaNew, log_like=log_like)
+  return <- results
+}
+
+# Theta init with evenly distributed allel combi
+theta <-rep(1/16,16) 
+names(theta) <- allele_combs
+
+for(i in 0:8){
+  results <- emStep(theta,dat)
+  theta <- results[["theta"]]
+  cat("iter",i,"loglik: ",results[["log_like"]],"\n","theta:",results[["theta"]],"\n")
+}
+
+```
+
+
+
+### Estimate 16 fractions of allele configurations and make a barplot of the results.
+```{r}
+# Testing the exhaustive loop through all snps and all possible genotype of two individuals
+library(ggplot2)
+
+data.frame(theta = factor(names(theta), levels = names(theta)), freq = theta) |> 
+  ggplot(aes(theta, freq)) + 
+  geom_bar( stat = "identity") + 
+  labs(title="Estimated Fraction of Allee Combinations") +
+  theme_bw()
+```
+
+### Based on your results what is the estimated number of sites that are variable (sites when indiiduals 1 and 2 have different alleles)?
+```{r}
+
+# Total fraction of variable allele combinations
+tot_var_frac <- 0 
+for(b1 in bases){
+  for(b2 in bases){
+    if(b1!=b2){
+      tot_var_frac <- tot_var_frac + theta[paste0(b1,b2)]
+    }
+  }
+}
+
+cat("Estimated total number of site that are variable:", floor(tot_var_frac*nrow(dat)))
+```

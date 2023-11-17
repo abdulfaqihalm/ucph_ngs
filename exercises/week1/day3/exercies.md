@@ -1,8 +1,8 @@
 # Questions:
 ## PART 1
 - How large (in base pairs) is the bacterial reference genome?
-```cat mleprae_reference_genome.fasta.gz  | tail -n +2 | wc -m```
-Ther result is 3,226,951 base pairs.
+```zcat mleprae_reference_genome.fasta.gz  | tail -n +2 | wc -lc | awk '{print $2 - $1}'```
+Ther result is 3,187,112 bases pairs.
 
 - Use bwa aln (and samse) to align the two fastq files to the bacterial reference (Hint: look at the exercises from https://github.com/ANGSD/adv_binf_2023_week1/tree/main/day2).
 Align first 

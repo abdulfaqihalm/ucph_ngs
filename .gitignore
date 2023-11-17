@@ -52,7 +52,8 @@ po/*~
 rsconnect/
 
 # Materials folder 
-material/
+materials/*
+exercises/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

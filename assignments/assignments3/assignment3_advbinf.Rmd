@@ -1,0 +1,671 @@
+---
+title: "assignment3_advbinf"
+output: html_document
+date: "2023-10-25"
+---
+
+__Name: Abdullah Faqih Al Mubarok__ 
+
+__KU id: vpx267__
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!require(devtools)) install.packages("devtools")
+devtools::install_github("yanlinlin82/ggvenn")
+
+library(Biostrings)
+library(tidyverse)
+library(RColorBrewer)
+library(viridis)
+library(ggrepel)
+library(ggridges)
+library(ggdist)
+library(ggpmisc)
+library(seqinr)
+library(ggvenn)
+
+```
+
+## Task 1: quality control and translation
+```{r}
+base_dir <- "./data"
+
+# ordering of amino acid by biochemical properties. It makes it easier to spot clusters of similar effects that are due to biochemistry.
+colnames.by.AA <- c("G", "A", "V", "L", "I", "M", "F", "W", "P", "S", "T", "C", "Y", "N", "Q", "D", "E", "K", "R", "H")
+
+Sarkisyan.file <- paste(base_dir, "nt_sequences_to_brightness.csv", sep="/")
+Sarkisyan.data <- read.csv(Sarkisyan.file, stringsAsFactors = F)
+colnames(Sarkisyan.data)
+
+nativeDNA <- "AGCAAGGGCGAGGAGCTGTTCACCGGGGTGGTGCCCATCCTGGTCGAGCTGGACGGCGACGTAAACGGCCACAAGTTCAGCGTGTCCGGCGAGGGCGAGGGCGATGCCACCTACGGCAAGCTGACCCTGAAGTTCATCTGCACCACCGGCAAGCTGCCCGTGCCCTGGCCCACCCTCGTGACCACCCTGTCGTACGGCGTGCAGTGCTTCAGCCGCTACCCCGACCACATGAAGCAGCACGACTTCTTCAAGTCCGCCATGCCCGAAGGCTACGTCCAGGAGCGCACCATCTTCTTCAAGGACGACGGCAACTACAAGACCCGCGCCGAGGTGAAGTTCGAGGGCGACACACTAGTGAACCGCATCGAGCTGAAGGGCATCGACTTCAAGGAGGACGGCAACATCCTGGGGCACAAGCTGGAGTACAACTACAACAGCCACAACGTCTATATCATGGCCGACAAGCAGAAGAACGGCATCAAGGTGAACTTCAAGATCCGCCACAACATCGAGGACGGCAGCGTGCAGCTCGCCGACCACTACCAGCAGAACACCCCCATCGGCGACGGCCCCGTGCTGCTGCCCGACAACCACTACCTGAGCACCCAGTCCGCCCTGAGCAAAGACCCCAACGAGAAGCGCGATCACATGGTCCTGCTGGAGTTCGTGACCGCCGCCGGGATCACTCACGGCATGGACGAGCTGTACAAGTGA"
+
+nativeAA <- as.character(Biostrings::translate(DNAString(nativeDNA)))
+
+```
+
+
+```{r}
+# Filtering out the sequence which have gaps, nchar not equal to nativeDNA,
+# and don't have stop codons at the end
+N <- nchar(nativeDNA)
+
+Sarkisyan.data.filtered <- Sarkisyan.data |> 
+  filter(!grepl("-",sequence) 
+         & nchar(sequence)==N
+         & (substr(sequence, start=N-2, stop=N) %in% c("TAA", "TAG", "TGA")))
+
+# translate into amino acids 
+Sarkisyan.data.filtered$aa_seq <- sapply(Sarkisyan.data.filtered[, "sequence"], 
+       function(row) return(as.character(Biostrings::translate(DNAString(row)))),
+       simplify = TRUE
+       )
+
+# Filtering out the premature stop codon 
+Sarkisyan.data.filtered <- Sarkisyan.data.filtered |> 
+  rowwise() |> 
+  filter(length(regmatches(aa_seq, gregexpr("\\*", aa_seq))[[1]])==1) |> 
+  ungroup()
+```
+
+
+### How many unique barcodes are found? How many unique DNA variant sequences?
+```{r}
+# Unique barcode and DNA sequence count before cleanup 
+Sarkisyan.data |>
+  summarise(count_distinct_uniq_barcode = sum(uniqueBarcodes), 
+            count_distinct_DNA_variants = n_distinct(sequence))
+# Unique barcode and DNA sequence count after cleanup 
+Sarkisyan.data.filtered |>
+  summarise(count_distinct_uniq_barcode = sum(uniqueBarcodes), 
+            count_distinct_DNA_variants = n_distinct(sequence))
+```
+
+
+### How many unique protein sequences after cleanup?
+```{r}
+# Unique barcode and DNA sequence count
+Sarkisyan.data.filtered |>
+  summarise(count_distinct_aa = n_distinct(aa_seq))
+```
+
+
+### Determine is the most common protein sequence that is not wild-type, and report the mutation(s) found in this sequence. Keep in mind that a protein sequence can be encoded by several different barcodes.
+
+Below is the function that returns the index of the mutation as well as 
+```{r}
+# Functions of reporting mutations from sequence(s)
+list.string.diff.pos <- function(a, b = nativeSeq, exclude = c("-", "?"), ignore.case = TRUE, show.excluded = FALSE)
+{
+if(nchar(a)!=nchar(b)) stop("Lengths of input strings differ. Please check your input.")
+  if(ignore.case)
+  {
+    a <- toupper(a)
+    b <- toupper(b)
+  }
+  split_seqs <- strsplit(c(a, b), split = "")
+  only.diff <- (split_seqs[[1]] != split_seqs[[2]])
+  only.diff[
+    (split_seqs[[1]] %in% exclude) |
+      (split_seqs[[2]] %in% exclude)
+] <- NA 
+  diff.info<-list(which(is.na(only.diff)|only.diff)) 
+  if(!show.excluded) diff.info<-na.omit(diff.info) 
+  
+  ## Showing the location of difference as string
+  str <- "" 
+  muts <- c()
+  muts_str <- ""
+  for(i in 1:nchar(a)){
+    if((i %in% diff.info[[1]])) {
+      str <- paste0(str, "|")
+      muts <- c(muts, paste0(substr(b, i, i),i,substr(a,i,i)))
+      if(nchar(muts_str)!=0) {
+        muts_str <- paste0(muts_str,",",paste0(substr(b, i, i),i,substr(a,i,i)))
+      }else{
+        muts_str <- paste0(paste0(substr(b, i, i),i,substr(a,i,i)))
+      }
+    } else {
+      str <- paste0(str, "=")
+    }
+  }
+  
+  result <- paste0(b, "\n", a, "\n", str)
+  
+  return(list(idx=diff.info[[1]], str_result = result, muts = muts, muts_str=muts_str))
+}
+```
+
+
+```{r}
+most_common_aa_df <- Sarkisyan.data.filtered |> 
+  filter(aa_seq!=nativeAA) |> 
+  group_by(aa_seq) |> 
+  summarise(count = sum(uniqueBarcodes)) |> 
+  ungroup() |> 
+  arrange(desc(count)) |> 
+  head(1)
+
+most_common_aa <- most_common_aa_df |> select(aa_seq) |> pull()
+
+diff_most_common_aa <- list.string.diff.pos(most_common_aa, nativeAA)
+
+# Printing the aligned mutation
+cat(diff_most_common_aa$str_result, "\n\n")
+
+# Printing the idxs where mutations occur 
+# mut_idx <- diff_most_common_aa$idx
+
+cat("Most non-WT common protein sequence has", most_common_aa_df$count, "uniqueBarcodes\n")
+cat(paste("List of the mutation(s) of the most common protein sequence (non-WT):\n"))
+cat(diff_most_common_aa$muts_str)
+
+```
+
+
+## Task 2: protein-level variants
+
+
+### Are the deviations you observe beyond what you expect based on the experimental error?
+
+First, we would like to extract the mutation information of each non-WT sequence such as the mutation list, and the count of mutation
+```{r}
+# Extracting the mutation info for each of the variants 
+# each row will produce two values which are the list of the mutation in string 
+# and the count of the mutation
+extract_mut_info <- function(mut_seq_vector, nativeAA){
+  muts_list_str <- c()
+  count_muts <- c()
+  for(i in 1:length(mut_seq_vector) ){
+    diff_info <- list.string.diff.pos(mut_seq_vector[i], nativeAA)
+    
+    muts_list_str <- c(muts_list_str, diff_info$muts_str)
+    count_muts <- c(count_muts, length(diff_info$idx) )
+  }
+  
+  return(tibble(muts_list_str, count_muts))
+}
+
+# Get the non-WT sequences
+Sarkisyan.data.filtered.non.WT <- Sarkisyan.data.filtered |> 
+  filter(aa_seq!=nativeAA)
+# Extract the mutataion information
+mut_info <- extract_mut_info(Sarkisyan.data.filtered.non.WT |> 
+  pull(aa_seq), nativeAA)
+# Bind the mutation information into non-WT sequences data
+Sarkisyan.data.filtered.non.WT <- bind_cols(Sarkisyan.data.filtered.non.WT, mut_info)
+```
+
+
+```{r}
+# Hacking the data structure using Stringr
+#Sarkisyan.data.filtered.non.WT 
+df_non_WT_Sarkisyan <- Sarkisyan.data.filtered.non.WT  |> 
+  dplyr::mutate(muts_list = muts_list_str, .after = aa_seq ) |>  
+  separate_longer_delim(muts_list_str, delim=",") |> 
+  dplyr::rename(mut = muts_list_str) |>  
+  mutate(wt_aa = str_extract(mut, "^[A-Z]"), mut_pos = as.integer(str_extract(mut, "\\d+")), 
+         mut_aa = str_extract(mut, "[A-Z]$"))
+```
+
+
+Next, we created a plot from the average of only single-mutation sequences for a control
+```{r}
+# control_data
+df_single_mutants <- df_non_WT_Sarkisyan |>
+    dplyr::filter(count_muts==1)
+
+single_mutant_avg <- df_single_mutants |> 
+  dplyr::group_by(mut) |> 
+  dplyr::summarise(meanBrightness = mean(medianBrightness), 
+                   # StdError propagation for the average
+                   stdErrProp= (1/sum(!is.na(stdErr)) )*sqrt(sum(stdErr^2,na.rm = TRUE)))
+
+control <- df_single_mutants |> 
+  inner_join(single_mutant_avg, by=join_by(mut)) 
+
+ggplot(data = control, 
+       mapping = aes(x = medianBrightness, y = meanBrightness)) + 
+  geom_errorbar(alpha = 0.5, colour = "grey",  width = 0.05,
+                mapping = aes(ymin = (meanBrightness - stdErrProp), 
+                              ymax = (meanBrightness + stdErrProp))) +
+  geom_errorbarh(alpha = 0.5, colour = "grey", height = 0.05,
+                mapping = aes(xmin = (medianBrightness - stdErr), 
+                              xmax = (medianBrightness + stdErr))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  stat_poly_line(color = "black", linetype = "dashed") +
+  stat_poly_eq(aes(label =  sprintf("%s*\" with \"*%s",
+                                    after_stat(rr.label),
+                                    after_stat(p.value.label)))) +
+  labs(title = "Control Plot",
+       x = "Score (medianBrightness of Single Variants)",
+       y = "Score (Mean over medianBrightness of\nSingle-mutation Variants)") + 
+  theme_bw()
+```
+
+
+```{r}
+library(ggpubr)
+cor(control$medianBrightness,control$meanBrightness)
+cor.test(control$medianBrightness,control$meanBrightness)
+```
+
+
+
+
+We can see that the score of single variants vs score of the mean of single variants are correlated with $R^{2} = 0.96$. This is expected since the brighness values only came from a single mutations (did not have epistasis).
+
+Next, we plot the medianBrightness of those single-mutant sequences to the averaged scores across all mutations.
+
+```{r}
+df_single_mutants <- df_non_WT_Sarkisyan |>
+    dplyr::filter(count_muts==1)
+
+all_variants_avg <- df_non_WT_Sarkisyan |> 
+  dplyr::group_by(mut) |> 
+  dplyr::summarise(meanBrightness = mean(medianBrightness), 
+                   # StdError propagation for the average
+                   stdErrProp= (1/sum(!is.na(stdErr)) )*sqrt(sum(stdErr^2,na.rm = TRUE)))
+
+df_all_variants <- df_single_mutants |> 
+  inner_join(all_variants_avg, by=join_by(mut)) 
+
+ggplot(data = df_all_variants, 
+       mapping = aes(x = medianBrightness, y = meanBrightness)) + 
+  geom_errorbar(alpha = 0.5, colour = "grey",  width = 0.05,
+                mapping = aes(ymin = (meanBrightness - stdErrProp), 
+                              ymax = (meanBrightness + stdErrProp))) +
+  geom_errorbarh(alpha = 0.5, colour = "grey", height = 0.05,
+                mapping = aes(xmin = (medianBrightness - stdErr), 
+                              xmax = (medianBrightness + stdErr))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  stat_poly_line(color = "black", linetype = "dashed") +
+  stat_poly_eq(aes(label =  sprintf("%s*\" with \"*%s",
+                                    after_stat(rr.label),
+                                    after_stat(p.value.label)))) +
+  labs(title =  "All Variants vs Single Variants Plot",
+       x = "Score (medianBrightness of Single Variants)",
+       y = "Score (Mean over medianBrightness of All Variants)") + 
+  theme_bw()
+```
+
+### remove all data that was only observed once, and repeat the comparison of averages over all sequences vs. single mutations. Include that plot. How does the pattern change? What’s your hypothesis for why we see this?
+```{r}
+df_single_mutants_no_single_obsv <- df_non_WT_Sarkisyan |>
+  dplyr::filter(count_muts==1) |> 
+  dplyr::filter(uniqueBarcodes>1)
+
+all_variants_avg_no_single_obsv <- df_non_WT_Sarkisyan |> 
+  dplyr::filter(uniqueBarcodes>1) |> 
+  dplyr::group_by(mut) |> 
+  dplyr::summarise(meanBrightness = mean(medianBrightness), 
+                   # StdError propagation for the average
+                   stdErrProp= (1/sum(!is.na(stdErr)) )*sqrt(sum(stdErr^2,na.rm = TRUE)))
+
+df_all_variants_no_single_obsv <- df_single_mutants_no_single_obsv |> 
+  inner_join(all_variants_avg_no_single_obsv, by=join_by(mut)) 
+
+ggplot(data = df_all_variants_no_single_obsv, 
+       mapping = aes(x = medianBrightness, y = meanBrightness)) + 
+  geom_errorbar(alpha = 0.5, colour = "grey",  width = 0.05,
+                mapping = aes(ymin = (meanBrightness - stdErrProp), 
+                              ymax = (meanBrightness + stdErrProp))) +
+  geom_errorbarh(alpha = 0.5, colour = "grey", height = 0.05,
+                mapping = aes(xmin = (medianBrightness - stdErr), 
+                              xmax = (medianBrightness + stdErr))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  stat_poly_line(color = "black", linetype = "dashed") +
+  stat_poly_eq(aes(label =  sprintf("%s*\" with \"*%s",
+                                    after_stat(rr.label),
+                                    after_stat(p.value.label)))) +
+  labs(title = "No Single Observation Variants vs Single Variants Plot",
+       x = "Score (medianBrightness of Single Variants)",
+       y = "Score (Mean over medianBrightness of No Single Obsv Variants)") + 
+  theme_bw()
+```
+
+
+
+
+## Task 3: summary matrix
+### Average the brightness data across all variants in a 20x20 matrix showing the wild-type and target amino acids, as we did in the exercises in class. Submit a plot of the matrix (see e.g. ex. 3) as part of your homework assignment
+```{r}
+summary_data <- df_non_WT_Sarkisyan |> 
+  dplyr::group_by(wt_aa, mut_aa) |> 
+  dplyr::summarise(meanBrightness = mean(medianBrightness)) |> 
+  dplyr::ungroup()
+
+# Init the summary table 
+all_pairs <- expand.grid(wt_aa = colnames.by.AA, mut_aa = colnames.by.AA) 
+all_pairs <- all_pairs |>  
+  left_join(summary_data, by = c("wt_aa" = "wt_aa", "mut_aa" = "mut_aa") )
+
+all_pairs$wt_aa <- factor(all_pairs$wt_aa, levels = colnames.by.AA)
+all_pairs$mut_aa <- factor(all_pairs$mut_aa, levels = colnames.by.AA)
+
+summary_plot <- function(summary_data, title) {
+  values <- summary_data |> 
+    filter(!is.na(meanBrightness)) |> 
+    pull(meanBrightness)
+  
+  # Normalize values
+  normalized_breaks <- scales::rescale(c(min(values), mean(values), max(values)))
+  
+  ggplot(data = summary_data, mapping = aes(x = mut_aa, y = wt_aa)) +
+    # For non-diagonal tiles with gradient fill
+    geom_tile(data = summary_data,
+              mapping = aes(fill = meanBrightness)) +
+    scale_fill_gradientn(
+      na.value = "transparent",
+      colours = c("white", "yellow", "red"), 
+      values = normalized_breaks
+    ) +
+    # For diagonal tiles with gray fill
+    geom_tile(data = subset(summary_data, wt_aa == mut_aa),
+              fill = "gray") +
+    labs(title = title,
+         x = "Mutant Residue",
+         y = "WT Residue") +
+    guides(fill = guide_colorbar(title = "Mean Brightness")) +
+    theme_bw()
+}
+
+summary_plot(all_pairs,"Summary Plot of All Variants")
+```
+
+
+
+
+## Task 4: compare to the other GFP mutagenesis dataset
+### Compare it to the nativeDNA included above (e.g. by pairwise sequence alignment), then translate both sequences to protein and compare those. Write a short paragraph describing what you observe. is local or global alignment more suitable here?
+Since the length of the nativeDNA from the exercise is half of nativeDNA from the assignment, It is more suitable to look for the alignment between subsequences of them and look for possible same domain. Thus, we use the local alignment.
+```{r warning=FALSE}
+
+nativeDNA_exercise <- read.fasta("data/native_DNA.fa")
+# convert to string 
+nativeDNA_exercise <- paste(toupper(nativeDNA_exercise$seq), collapse = "")
+
+# Using biostring local (smith-watterman) pairwise alignment
+DNA_alignment <- Biostrings::pairwiseAlignment(nativeDNA,nativeDNA_exercise,  type="local")
+
+writePairwiseAlignments(DNA_alignment)
+```
+
+```{r warning=FALSE}
+nativeAA_exercise <- as.character(Biostrings::translate(DNAString(nativeDNA_exercise)))
+
+# Using biostring local (smith-watterman) pairwise alignment
+aa_alignment <- Biostrings::pairwiseAlignment(nativeAA,nativeAA_exercise,  type="local")
+
+writePairwiseAlignments(aa_alignment)
+```
+
+From the pairwise alignments above, we might conclude that the nativeAA from the exercise is a subsequence of the nativeAA from the assignment. In addition, despite the difference on the DNA pairwise alignment, the AA alignment is perfectly matched. We could also see that the exercise nativeAA aligned started at index 133 until 229 of assignment NativeAA. 
+
+### How many variants (wt, position, mut.aa) are observed in both datasets? only observed in the Sarkisyan dataset? only observed in the dataset we worked with in class?
+
+First, we need to load the exercise datasets and doing clean up as well as translation to the AA
+```{r}
+# Load GFP Datasets 
+N <- nchar(nativeDNA_exercise)
+bright_data <- read.table("data/bright_GFP_beads.counts")
+dim_data <- read.table("data/dim_GFP_beads.counts")
+
+# Filtering out the sequence below 5 reads, have gaps, nchar not the same with references
+# and don't have stop codon
+dim_data <- dim_data |> 
+  filter(V1>=5 & !grepl("-",V2) 
+         & nchar(V2)==N
+         & (substr(V2, start=N-2, stop=N) %in% c("TAA", "TAG", "TGA")) ) |> 
+  dplyr::rename(count = V1, dna_seq = V2)
+bright_data <- bright_data |> 
+  filter(V1>=5 & !grepl("-",V2) 
+         & nchar(V2)==N
+         & (substr(V2, start=N-2, stop=N) %in% c("TAA", "TAG", "TGA")) ) |> 
+  dplyr::rename(count = V1, dna_seq = V2)
+
+# Translating DNA
+# note: this might still contain premature stop
+dim_data$aa_seq <- sapply(dim_data[, "dna_seq"], 
+       function(row) return(as.character(Biostrings::translate(DNAString(row)))),
+       simplify = TRUE
+       )
+bright_data$aa_seq <- sapply(bright_data[, "dna_seq"], 
+       function(row) return(as.character(Biostrings::translate(DNAString(row)))),
+       simplify = TRUE
+       )
+
+# Filtering out premature stop codon within ORF
+bright_data <- bright_data |> 
+  rowwise() |> 
+  filter(length(regmatches(aa_seq, gregexpr("\\*", aa_seq))[[1]])==1) |> 
+  ungroup()
+dim_data <- dim_data |> 
+  rowwise() |> 
+  filter(length(regmatches(aa_seq, gregexpr("\\*", aa_seq))[[1]])==1) |> 
+  ungroup()
+```
+
+Next, we find the variants on the exercise data 
+```{r}
+# Get the non-WT sequences of bright and dim
+dim_data.non.WT <- dim_data |> filter(aa_seq != nativeAA_exercise)
+bright_data.non.WT <- bright_data |> filter(aa_seq != nativeAA_exercise)
+
+# Extract the mutation information
+dim_mut_info <- extract_mut_info(dim_data.non.WT |> 
+  pull(aa_seq), nativeAA_exercise)
+bright_mut_info <- extract_mut_info(bright_data.non.WT |> 
+  pull(aa_seq), nativeAA_exercise)
+
+# Bind the mutation information into non-WT sequences data
+dim_data.non.WT <- bind_cols(dim_data.non.WT, dim_mut_info)
+bright_data.non.WT <- bind_cols(bright_data.non.WT, bright_mut_info)
+
+# Hacking the data structure using Stringr
+df_dim_data.non.WT <- dim_data.non.WT  |> 
+  dplyr::mutate(muts_list = muts_list_str, .after = aa_seq ) |>  
+  separate_longer_delim(muts_list_str, delim=",") |> 
+  dplyr::rename(mut = muts_list_str) |>  
+  mutate(wt_aa = str_extract(mut, "^[A-Z]"), mut_pos = as.integer(str_extract(mut, "\\d+")), 
+         # Adding a column containg the position within the assignment data
+         mut_aa = str_extract(mut, "[A-Z]$"), assignment_mut_pos = as.integer(mut_pos+132))
+df_bright_data.non.WT <- bright_data.non.WT  |> 
+  dplyr::mutate(muts_list = muts_list_str, .after = aa_seq ) |>  
+  separate_longer_delim(muts_list_str, delim=",") |> 
+  dplyr::rename(mut = muts_list_str) |>  
+  mutate(wt_aa = str_extract(mut, "^[A-Z]"), mut_pos = as.integer(str_extract(mut, "\\d+")), 
+         # Adding a column containg the position within the assignment data
+         mut_aa = str_extract(mut, "[A-Z]$"), assignment_mut_pos = as.integer(mut_pos+132))
+```
+
+Then we find the unique variants and compare it between the two
+
+```{r}
+# Summing the count for bright and dim
+# The mutation id uses the assignment mut position instead
+df_bright_data.non.WT_sum <- df_bright_data.non.WT |> 
+  select(wt_aa, assignment_mut_pos, mut_aa, count) |> 
+  mutate(mut = paste0(wt_aa, assignment_mut_pos, mut_aa)) |> 
+  group_by(mut) |> 
+  summarise(abund_bright = sum(count)) |> 
+  ungroup() 
+
+df_dim_data.non.WT_sum <- df_dim_data.non.WT |> 
+  select(wt_aa, assignment_mut_pos, mut_aa, count) |> 
+  mutate(mut = paste0(wt_aa, assignment_mut_pos, mut_aa)) |> 
+  group_by(mut) |> 
+  summarise(abund_dim = sum(count)) |> 
+  ungroup() 
+
+# Joining the bright and dim data by mut
+df_bright_dim.non.WT_sum <- inner_join(df_bright_data.non.WT_sum,
+                                        df_dim_data.non.WT_sum, 
+                                        by = c("mut"))
+# Calculating the log of bright/dim
+df_bright_dim.non.WT_sum <- df_bright_dim.non.WT_sum |> 
+  mutate(log_bright_dim = log10(abund_bright/abund_dim))
+
+# Filtering the Sarkisyan average medianBrightness by its position based on the 
+# mapping 
+all_variants_avg_pos_filter <- all_variants_avg |> 
+  filter(as.integer(str_extract(mut, "\\d+")) >=133 & as.integer(str_extract(mut, "\\d+"))<=229)
+
+var_list_unique <- list(sarkisyan_variants = all_variants_avg_pos_filter |> pull(mut), 
+                        bright_dim_variants = df_bright_dim.non.WT_sum |> pull(mut))
+
+# Printing the venn diagram
+ggvenn(
+  var_list_unique, 
+  fill_color = c("#0073C2FF", "#EFC000FF"),
+  stroke_size = 0.5, set_name_size = 4
+  ) + labs(
+  title = "Unique Variants GFP and Sarkisyan's 133 to 229 Position") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+### For the variants found in both datasets, create a scatterplot to compare their averaged medianBrightness (see task 2) vs. log(bright/dim) ratio. Briefly describe what trends you observe, and whether those are what you would expect. Note that there should be hundreds of points in this plot. If you have far fewer, go back to 4.1. Submit the scatter plot and discussion as part of your hand-in
+```{r}
+inner_sarkisyan_bright_dim <- inner_join(df_bright_dim.non.WT_sum, all_variants_avg_pos_filter, by = c("mut"))
+
+ggplot(data = inner_sarkisyan_bright_dim, mapping = aes(y = log_bright_dim, 
+                                                        x = meanBrightness)) +
+  geom_point(alpha = 0.3, color = "blue") +
+  stat_poly_line(color = "black", linetype = "dashed") +
+  stat_poly_eq(aes(label =  sprintf("%s*\" with \"*%s",
+                                    after_stat(rr.label),
+                                    after_stat(p.value.label)))) +
+  labs(title = "Mean of Median Brightness (All Variants) vs log10(bright/dim)",
+       y = "log10(bright/dim)",
+       x = "Mean of Median Brightness ") + 
+  theme_bw()
+```
+
+
+
+
+## Task 5: integrating MAVE assays of stability and activity
+```{r}
+vkor_ab_act <- as_tibble(read.table("data/prism_mave_035_VKOR_ab_activity.txt", header = TRUE))
+vkor_ab_act <- vkor_ab_act |> rename(ab_act_score = score, ab_act_std = std)
+
+vkor_abund <- as_tibble(read.table("data/prism_mave_036_VKOR_abundance.txt", header = TRUE))
+vkor_abund <- vkor_abund |> rename(abund_score = score, abund_std = std)
+
+gnomad_vkor <- as_tibble(read.csv("data/gnomAD_v2.1.1_ENSG00000167397_2022_11_03_09_36_08.csv"))
+
+head(vkor_ab_act)
+head(vkor_abund)
+head(gnomad_vkor)
+```
+
+
+### Create a scatter plot of all the variants described by the two MAVEs.
+```{r}
+vkor_act_abund <- inner_join(vkor_ab_act, vkor_abund, by = c("variant"))
+
+ggplot(data = vkor_act_abund, mapping = aes(x = ab_act_score, 
+                                                        y = abund_score)) +
+  geom_point(alpha = 0.3, color = "blue") +
+  stat_poly_line(color = "black", linetype = "dashed") +
+  stat_poly_eq(aes(label =  sprintf("%s*\" with \"*%s",
+                                    after_stat(rr.label),
+                                    after_stat(p.value.label)))) +
+  labs(title = "Activity vs Abundance Score of VKOR MAVE",
+       x = "Activity Score",
+       y = "Abundance Score") + 
+  theme_bw()
+```
+
+### Create a scatter plot of only the variants listed in gnomAD. Label the variants that have annotation in the “Clinical significance” field (hint: geom\_text\_repel from the ggrepel package is helpful).
+
+```{r}
+AA_lib <- c(names(Biostrings::AMINO_ACID_CODE))
+names(AA_lib) <- c(Biostrings::AMINO_ACID_CODE)
+# Additional dict 
+AA_lib <- c(AA_lib, c(del="-"))
+
+gnomad_vkor_variants <- gnomad_vkor |> 
+  select(Protein.Consequence, ClinVar.Clinical.Significance) |> 
+  mutate(aa = str_extract_all(str_extract(Protein.Consequence, "\\w+[\\d]+\\w+"), "[a-zA-Z]+"), 
+         pos = str_extract(str_extract(gnomad_vkor$Protein.Consequence, "\\w+[\\d]+\\w+"), "\\d+")) |> 
+  rowwise() |> 
+  mutate(variant = paste0(AA_lib[aa[[1]]],pos,AA_lib[aa[[2]]])) |> 
+  ungroup() |> 
+  select(variant, ClinVar.Clinical.Significance) |>
+  # Ther are 
+  distinct()
+
+# Synonymous DNA mutation list
+# gnomad_vkor |> filter(Protein.Consequence %in% c("p.Phe55Leu", "p.His28Gln", "p.Trp10Leu"))
+# 227 -> 224 c("F55L", "H28Q", "W10L")
+
+
+vkor_act_abund_gnomad <- inner_join(vkor_act_abund, gnomad_vkor_variants,
+                                    by = c("variant"))
+
+non_empty_clinvar <- subset(vkor_act_abund_gnomad,ClinVar.Clinical.Significance!="")
+empty_clinvar <- subset(vkor_act_abund_gnomad,ClinVar.Clinical.Significance=="")
+
+ggplot(data = vkor_act_abund_gnomad, 
+       mapping = aes(x = ab_act_score, y = abund_score)) +
+  geom_point(data = empty_clinvar, 
+            color = "black", alpha = 0.3) +
+  geom_point(data = non_empty_clinvar, 
+             mapping = aes(color = ClinVar.Clinical.Significance), alpha = 0.5) +
+  geom_text_repel(data = non_empty_clinvar, 
+                  mapping = aes(label = ClinVar.Clinical.Significance, colour = ClinVar.Clinical.Significance),
+                  show.legend = FALSE) + 
+  geom_errorbar(data = non_empty_clinvar,
+                mapping = aes(ymin = (abund_score-abund_std), 
+                                ymax = (abund_score+abund_std), colour = ClinVar.Clinical.Significance),
+                width = 0.05, alpha = 0.5) +
+  geom_errorbarh(data = non_empty_clinvar,
+                 mapping = aes(xmin = (ab_act_score-ab_act_std), 
+                                xmax = (ab_act_score+ab_act_std), colour = ClinVar.Clinical.Significance),
+                 height = 0.05, alpha = 0.5) +
+  labs(title = "Activity vs Abundance Score of VKOR MAVE",
+       subtitle = "gnomAD listed variant only",
+       x = "Activity Score",
+       y = "Abundance Score",
+       color = "Clinical Significance"
+       ) + 
+  scale_colour_discrete(labels = function(x) str_wrap(x, width = 5))  +
+  theme_bw()  
+```
+
+
+
+### How many variants have an abundance score below 0.5?
+```{r}
+abund_below_0.5 <- vkor_act_abund_gnomad |> 
+  filter(abund_score < 0.5)
+
+cat(paste0("Number of intersection of the MAVEs and gnomAD variants which have abundance score below 0.5: ", length(abund_below_0.5$variant)))
+```
+
+
+
+### How many variants have an activity score below 0.4 and would thus be categorised as inactive? 
+```{r}
+act_below_0.4 <- vkor_act_abund_gnomad |> 
+  filter(ab_act_score < 0.4)
+
+cat(paste0("Number of intersection of the MAVEs and gnomAD variants which have activity score below 0.4: ", length(act_below_0.4$variant)))
+```
+
+
+### How many variants are in the intersection of those two categories, so, low abundance and low activity according to the assays?
+```{r}
+low_abund_act <- vkor_act_abund_gnomad |> 
+  filter(abund_score < 0.5, ab_act_score < 0.4)
+
+cat(paste0("Number of intersection of the MAVEs and gnomAD variants which have low abundance and activity score: ", length(low_abund_act$variant)))
+```
+
+
+### There are variants with conflicting interpretations in ClinVar. Can we make a better estimate regarding their effects after having seen the assay data?
+Since the conflicting interpretation has high both activity and abundance score and also can not be distinguished from the benign label, we might conclude that the conflicting interpretation variant does not impact gene function and causing disease (benign).
+

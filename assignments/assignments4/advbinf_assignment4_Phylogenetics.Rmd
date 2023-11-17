@@ -1,0 +1,63 @@
+---
+title: "assignment4_phylogenetics"
+author: "Abdullah Faqih Al Mubarok"
+date: "2023-11-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(phytools)
+library(nlme)
+```
+
+
+```{r cars}
+data("mammal.data", "mammal.tree", package="phytools")
+
+mammal.data$lgBodyMass <- log(mammal.data$bodyMass)
+mammal.data$lgHomeRange <- log(mammal.data$homeRange)
+
+head(mammal.data)
+plotTree(mammal.tree, type="phylogram", color="black", fsize=0.7)
+```
+```{r}
+## Visualize log(homeRange) on tree
+contMap(mammal.tree, 
+        setNames(mammal.data$lgHomeRange, rownames(mammal.data)), 
+        lwd=2, fsize=0.5)
+```
+
+```{r}
+## Calculating the Brownian Correlation
+### The form needs to be a var
+species <- rownames(mammal.data)
+corBM <- corBrownian(phy=mammal.tree,form=~species)
+
+## Run GLS
+pgls_fit <- gls(lgHomeRange ~ lgBodyMass, 
+                    data=mammal.data, correlation=corBM)
+summary(pgls_fit)
+```
+
+```{r}
+dat <- setNames(mammal.data$lgHomeRange, rownames(mammal.data))
+
+fitBM <- fitContinuous(mammal.tree, dat, model="BM")
+fitEB <- fitContinuous(mammal.tree, dat, model="EB")
+fitOU <- fitContinuous(mammal.tree, dat, model="OU", 
+                       # Set the new max and min value for the alpha
+                       bounds=list(alpha = c(min=0, max=exp(5))))
+
+aic <- setNames(c(AIC(fitBM), AIC(fitEB), AIC(fitOU)), 
+                c("BM","EB","OU")) 
+
+print(aic.w(aic))
+print(aic)
+
+```
+
+```{r}
+fitOU
+```
+

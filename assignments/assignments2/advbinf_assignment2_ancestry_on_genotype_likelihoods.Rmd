@@ -1,0 +1,296 @@
+---
+title: "Assignment2: Ancestry based on genotype likelihoods"
+output: html_document
+date: "2023-10-06"
+---
+
+__Name: Abdullah Faqih Al Mubarok__ 
+
+__KU id: vpx267__
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(matrixStats)
+```
+
+## Estimate allele ancestral frequencies and ancestral proportions
+
+```{r}
+## Loading data 
+# Minor estimated allele frequencies
+est_f_data <- read.table("outK3.fopt.gz")
+names(est_f_data) <- c("K1", "K2", "K3")
+
+# Estimated ancestry
+est_q_data <- read.table("outK3.qopt")
+names(est_q_data) <- c("K1", "K2", "K3")
+
+# Pop Info 
+#    20 ASW -> african-american
+#    20 CEU -> european 
+#    20 CHB -> han chinese beijing
+#    20 MXL -> mexican 
+#    20 YRI -> yoruba
+pop_info <- read.table("pop.info")
+names(pop_info) <- c("pop_id", "indv_id")
+```
+
+
+To know what popuplation group represented by each column, we look at the table summary for the maximum ancestry proportion summary table  
+```{r}
+max_q <- tibble(max_K = colnames(est_q_data)[apply(est_q_data,1,which.max)],
+                    pop_id = pop_info$pop_id)
+
+# The 3 ancestral populations can roughly be interpreted as European, African and (Asian + Native American)  
+table(max_q)
+```
+
+
+From the results above, we can conclude that the K1 represents African, K2 represents European,  and K3 represents (Asian + Native American). Then, we can calculate the average estimated European ancestry (K2) in the African Americans (ASW)
+
+ - What is the average estimated European ancestry in the African Americans?
+```{r}
+summary_data <- est_q_data |> 
+  mutate(pop_id = pop_info$pop_id, .before=1) |> 
+  group_by(pop_id) |> 
+  summarise(across(everything(), mean),
+            .groups = 'drop')   |> 
+  rename(afr_anc_prop = K1,
+         eu_anc_prop = K2,
+         asia_america_anc_prop = K3)
+
+  
+summary_data |> 
+  filter(pop_id=="ASW")
+  
+```
+From the data above, we can see that the average (mean) of the estimated European ancestry in the African Americans is 0.1965986. 
+
+- For each of the five populations calculate the average estimated ancestry proportion belonging
+to the 3 ancestral populations. Summaries the results in a table.
+```{r}
+summary_data
+```
+
+
+## Genotype calling based on different priors
+
+```{r}
+#calculated glik 
+calc_glik <- read.table("input.gz", header = TRUE)
+
+# true geno 
+true_geno <- read.table("input.geno")
+
+head(calc_glik)
+head(true_geno)
+```
+
+
+
+```{r}
+# Load input calculated Genotype Likelihoods
+input_gl_ind7 <- calc_glik  |> 
+  select(marker, allele1, allele2, Ind7, Ind7.1, Ind7.2)
+
+# Indv info
+info_ind7 <- pop_info |> filter(indv_id=="NA19700")
+
+# True geno
+true_geno_ind7 <- true_geno[, "NA19700"]
+
+head(input_gl_ind7)
+print(info_ind7)
+table(true_geno_ind7)
+```
+
+- Assume a uniform prior (assume all 3 genotypes are equally likely). Plot a histogram of the 50000 posterior probabilities for the called genotypes.
+
+The posterior probability for each site $j$ would be: 
+$$P(G=g|X_{j}) = \frac{P(X_{j}|G=g)P(G=g)}{P(X_{j})}$$
+
+where $P(X_{j}|G=g$ is genotype likelihood for each site $j$ for genotype $g$, $P(G=g')=\frac{1}{3}$ is the uniform prior for all genotypes $g$, and $P(X_{j}) = \sum_{g’}p(X_{ij}|g’)p(g’)$ 
+
+Then, we call the genotype which has the maximum posterior. Here we call the first occurrence (smallest genotype velue) if there are several same values of posterior 
+
+```{r}
+# Uniform prior for 0, 1, 2 genotypes
+prior <-rep(1/3,3) 
+
+input_gl_ind7_uniform <- input_gl_ind7 |>
+  # looping through each rows of dataframe
+  rowwise() |> 
+  mutate(posterior = (Ind7*prior[1])/(Ind7*prior[1] + Ind7.1*prior[2] + Ind7.2*prior[3]),
+         posterior.1 = (Ind7.1*prior[2])/(Ind7*prior[1] + Ind7.1*prior[2] + Ind7.2*prior[3]),
+         posterior.2 = (Ind7.2*prior[3])/(Ind7*prior[1] + Ind7.1*prior[2] + Ind7.2*prior[3]),
+         max_posterior = max(posterior, posterior.1, posterior.2 ),
+         geno_call = which.max(c_across(starts_with("posterior"))) - 1) |> 
+  ungroup()
+```
+
+```{r}
+ggplot(data = input_gl_ind7_uniform, mapping = aes(x = max_posterior)) +
+  geom_histogram(binwidth = 0.01) + 
+  labs(title = "Histogram of Called Posterior Probability", 
+       subtitle = " Uniform Distribution") +
+  theme_bw()
+```
+
+
+- Use estimated ancestral allele frequency of the African ancestry as a prior assuming Hardy- Weinberg equilibrium. Write the formula that you are using to obtain the posterior probability 3 and plot a histogram of the posterior probabilities for the called genotypes.
+
+
+The posterior probability for each site $j$ would be: 
+$$P(G=g|X_{j},f) = \frac{P(X_{j}|G=g)P(G=g|f)}{P(X_{j}|f)}$$
+
+where $P(X_{j}|G=g)$ is the genotype likelihood for each site $j$ for genotype $g$. 
+
+Assuming HWE, $P(G=g|f) = f^2$ if $G=2$, $P(G=g|f) = 2*f*(1-f)$ if $G=1$, and $P(G=g|f) = (1-f)^2$ if $G=0$.   
+
+and $P(X_{j}) = \sum_{g’}p(X_{j}|G=g’)p(G=g’|f)$ 
+
+```{r}
+input_gl_ind7_hwe_afr <- input_gl_ind7 |>
+  mutate(f = est_f_data[,"K1"]) |> 
+  rowwise() |>
+  mutate(posterior = ( Ind7*((1-f)^2) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         posterior.1 = ( Ind7.1*2*f*(1-f) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         posterior.2 = ( Ind7.2*(f^2) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         max_posterior = max(posterior, posterior.1, posterior.2 ),
+         geno_call = which.max(c_across(starts_with("posterior"))) - 1) |>
+  ungroup()
+```
+
+```{r}
+ggplot(data = input_gl_ind7_hwe_afr, mapping = aes(x = max_posterior)) +
+  geom_histogram(binwidth = 0.01) + 
+  labs(title = "Histogram of Called Posterior Probabilities",
+       subtitle = "Assume HWE and Affrican as Prior") +
+  theme_bw()
+```
+
+
+
+
+- Try to make a prior that is better for genotypes calling by using a combinations of the 3 ancestral frequencies. Write the formulation for how you make this prior and plot a histogram of the posterior probabilities for the called genotypes.
+
+The posterior probability for each site $j$ would be: 
+$$P(G=g|X_{j},h) = \frac{P(X_{j}|G=g)P(G=g|h)}{P(X_{j}|h)}$$
+
+where $P(X_{j}|G=g)$ is the genotype likelihood for each site $j$ for genotype $g$. 
+
+$h_{j} = P(allele|Q, F_{j}) = q_{1}f_{1,j} + q_{2}f_{2,j} + q_{3}f_{3,j}$
+
+Assuming HWE, $P(G=g|h) = h^2$ if $G=2$, $P(G=g|h) = 2*h*(1-h)$ if $G=1$, and $P(G=g|h) = (1-h)^2$ if $G=0$.   
+
+and $P(X_{j}) = \sum_{g’}p(X_{j}|G=g’)p(G=g’|h)$ 
+
+```{r} 
+est_q_ind7 <- est_q_data[which(pop_info$indv_id=="NA19700"), ]
+
+h <- est_q_ind7$K1*est_f_data$K1 + est_q_ind7$K2*est_f_data$K2 + est_q_ind7$K3*est_f_data$K3
+
+input_gl_ind7_hwe_Q <- input_gl_ind7 |>
+  mutate(f = h) |> 
+  rowwise() |>
+  mutate(posterior = ( Ind7*((1-f)^2) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         posterior.1 = ( Ind7.1*2*f*(1-f) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         posterior.2 = ( Ind7.2*(f^2) )/( Ind7*((1-f)^2) + Ind7.1*2*f*(1-f) + Ind7.2*(f^2) ),
+         max_posterior = max(posterior, posterior.1, posterior.2 ),
+         geno_call = which.max(c_across(starts_with("posterior"))) - 1) |>
+  ungroup()
+```
+
+```{r}
+ggplot(data = input_gl_ind7_hwe_Q, mapping = aes(x = max_posterior)) +
+  geom_histogram(binwidth = 0.01) + 
+  labs(title = "Histogram of Called Posterior Probabilities",
+       subtitle = "Assume HWE and Using All 3 Ancestral Frequencies") +
+  theme_bw()
+```
+
+
+
+
+- Use haplotype imputation to call the genotypes. You should run Beagle on all individuals to obtain posterior probabilities for of each possible genotype. Make a histogram of the posterior probabilities for the called genotypes for the NA19700 individual
+
+
+```{bash eval=FALSE}
+#beagle in the same folder
+BEAGLE=./beagle.jar
+
+java -jar $BEAGLE like=input.gz out=imputation
+```
+
+```{r}
+gprobsDat<-read.table("imputation.input.gz.gprobs.gz",head=T,as.is=T)
+
+input_gl_ind7_imputation <- gprobsDat  |> 
+  select(marker, alleleA, alleleB, Ind7, Ind7.1, Ind7.2) |> 
+  rowwise() |>
+  mutate(max_posterior = max(Ind7, Ind7.1, Ind7.2),
+         geno_call = which.max(c_across(starts_with("Ind7"))) - 1) |> 
+  ungroup()
+  
+  
+head(input_gl_ind7_imputation)
+```
+
+
+```{r}
+ggplot(data = input_gl_ind7_imputation, mapping = aes(x = max_posterior)) +
+  geom_histogram(binwidth = 0.01) + 
+  labs(title = "Histogram of Called Posterior Probabilities",
+       subtitle = "Beagle Imputation") +
+  theme_bw()
+```
+
+
+
+
+```{r}
+plotAccuracy<-function(x,p,to=0.95,...){
+    p<-p[!is.na(x)]
+    x<-x[!is.na(x)]
+    ord<-order(p,decreasing=T)
+    missingness <- 1-1:length(x)/length(x)
+    accuracy <- 1-cumsum(!x[ord])/1:length(x)
+    #ignores high missingness (where there is little data)
+    ignore <- missingness > to
+    lines(missingness[!ignore],accuracy[!ignore],...)
+}
+## make plot
+plot(1,xlim=c(0,0.8),ylim=c(0.95,1),col="transparent",
+    xlab="Non-call Proportion",ylab="Call Accuracy", 
+    main = "Comparison of Genotype Callers")
+
+
+## uniform 
+plotAccuracy(input_gl_ind7_uniform$geno_call == true_geno_ind7,
+             input_gl_ind7_uniform$max_posterior,
+             lwd=3,col="red")
+## African prior 
+plotAccuracy(input_gl_ind7_hwe_afr$geno_call == true_geno_ind7,
+             input_gl_ind7_hwe_afr$max_posterior,
+             lwd=3,col="blue")
+## 3 Ancestral priors 
+plotAccuracy(input_gl_ind7_hwe_Q$geno_call == true_geno_ind7,
+             input_gl_ind7_imputation$max_posterior,
+             lwd=3,col="green")
+## imputation 
+plotAccuracy(input_gl_ind7_imputation$geno_call == true_geno_ind7,
+             input_gl_ind7_imputation$max_posterior,
+             lwd=3,col="hotpink")
+
+
+legend("bottomright", legend=c("Uniform Prior", "African Prior", "All Ancestrals Prior", "Beagle"),
+       col=c("red", "blue", "green", "hotpink"), lty=1, cex=1,
+       text.font=4)
+```
+
+
+
+
+
